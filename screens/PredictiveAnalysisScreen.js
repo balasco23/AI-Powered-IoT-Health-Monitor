@@ -16,6 +16,8 @@ import { MaterialIcons } from "@expo/vector-icons"
 import { LineChart } from "react-native-chart-kit"
 import moment from "moment"
 import aiPredictionService from "../services/aiPredictionService"
+import llmPredictionService from "../services/llmPredictionService"
+import healthMetricsService from "../services/healthMetricsService"
 import themeService from "../services/themeService"
 
 const screenWidth = Dimensions.get("window").width
@@ -30,10 +32,12 @@ export default function PredictiveAnalysisScreen() {
   const [historicalMetrics, setHistoricalMetrics] = useState([])
   const [selectedMetricType, setSelectedMetricType] = useState("temperature")
   const [currentTheme, setCurrentTheme] = useState("light")
+  const [last20Measurements, setLast20Measurements] = useState([])
 
   useEffect(() => {
     initializeTheme()
     loadAnalysis()
+    loadLast20Measurements()
   }, [])
 
   const initializeTheme = async () => {
@@ -52,14 +56,28 @@ export default function PredictiveAnalysisScreen() {
       setLoading(true)
       setError(null)
 
-      // Generate comprehensive health analysis
-      const healthAnalysis = await aiPredictionService.generateHealthAnalysis()
-      setAnalysis(healthAnalysis)
+      console.log("🤖 Loading LLM-powered health analysis...")
 
-      console.log("Analysis loaded successfully")
+      const temperatureData = await healthMetricsService.getMetrics({
+        metric_type: "temperature",
+        limit: 30,
+      })
+      const heartRateData = await healthMetricsService.getMetrics({
+        metric_type: "heart_rate",
+        limit: 30,
+      })
+
+      const llmAnalysis = await llmPredictionService.generateEnhancedHealthAnalysis(
+        temperatureData,
+        heartRateData,
+        { age: 30, gender: "unknown" }, // You can get this from user profile
+      )
+
+      setAnalysis(llmAnalysis)
+      console.log("✅ LLM analysis loaded successfully")
     } catch (error) {
-      console.error("Error loading analysis:", error)
-      setError("Failed to generate health predictions. Please try again.")
+      console.error("Error loading LLM analysis:", error)
+      setError("Failed to generate AI health predictions. Please check your internet connection and try again.")
     } finally {
       setLoading(false)
     }
@@ -68,6 +86,7 @@ export default function PredictiveAnalysisScreen() {
   const onRefresh = async () => {
     setRefreshing(true)
     await loadAnalysis()
+    await loadLast20Measurements()
     setRefreshing(false)
   }
 
@@ -100,23 +119,19 @@ export default function PredictiveAnalysisScreen() {
 
   const getTrendColor = (trend, metricType) => {
     const colors = themeService.getColors(currentTheme)
-    // For temperature, increasing is bad
     if (metricType === "temperature" && trend === "increasing") {
       return colors.error
     }
 
-    // For temperature, decreasing can be good
     if (metricType === "temperature" && trend === "decreasing") {
       return colors.success
     }
 
-    // For heart rate, both extremes can be bad
     if (metricType === "heart_rate") {
       if (trend === "stable") return colors.success
       return colors.warning
     }
 
-    // Default colors
     switch (trend) {
       case "increasing":
         return colors.warning
@@ -162,7 +177,7 @@ export default function PredictiveAnalysisScreen() {
       labels: forecast.map((item) => `Day ${item.day}`),
       datasets: [
         {
-          data: forecast.map((item) => item.value),
+          data: forecast.map((item) => item.value || item.temperature || item.heart_rate),
           color: (opacity = 1) => `rgba(67, 133, 244, ${opacity})`,
           strokeWidth: 2,
         },
@@ -200,7 +215,10 @@ export default function PredictiveAnalysisScreen() {
     const colors = themeService.getColors(currentTheme)
 
     return (
-      <View style={[styles.historicalOverlay, { backgroundColor: colors.overlay }]}>
+      <View
+        style={[styles.historicalOverlay, { backgroundColor: colors.overlay }]}
+        onPress={() => setShowHistoricalData(false)}
+      >
         <View style={[styles.historicalModal, { backgroundColor: colors.card }]}>
           <View style={[styles.historicalModalHeader, { borderBottomColor: colors.border }]}>
             <Text style={[styles.historicalModalTitle, { color: colors.text }]}>
@@ -255,18 +273,29 @@ export default function PredictiveAnalysisScreen() {
 
     return (
       <View>
-        {/* Trend and Risk Section */}
+        {analysis.llm_powered && metricData.trend_interpretation && (
+          <View style={[styles.llmInsightCard, { backgroundColor: colors.card }]}>
+            <View style={styles.llmInsightHeader}>
+              <MaterialIcons name="psychology" size={20} color={colors.primary} />
+              <Text style={[styles.llmInsightTitle, { color: colors.text }]}>AI Insight</Text>
+            </View>
+            <Text style={[styles.llmInsightText, { color: colors.text }]}>{metricData.trend_interpretation}</Text>
+          </View>
+        )}
+
         <View style={styles.metricOverview}>
           <View style={[styles.metricInfoCard, { backgroundColor: colors.card }]}>
-            <Text style={[styles.metricInfoLabel, { color: colors.textSecondary }]}>Trend</Text>
+            <Text style={[styles.metricInfoLabel, { color: colors.textSecondary }]}>Status</Text>
             <View style={styles.trendContainer}>
               <MaterialIcons
-                name={getTrendIcon(metricData.trend)}
+                name={getTrendIcon(metricData.trend || metricData.status)}
                 size={24}
-                color={getTrendColor(metricData.trend, activeTab)}
+                color={getTrendColor(metricData.trend || metricData.status, activeTab)}
               />
-              <Text style={[styles.trendText, { color: getTrendColor(metricData.trend, activeTab) }]}>
-                {formatTrendText(metricData.trend, activeTab)}
+              <Text
+                style={[styles.trendText, { color: getTrendColor(metricData.trend || metricData.status, activeTab) }]}
+              >
+                {metricData.status || formatTrendText(metricData.trend, activeTab)}
               </Text>
             </View>
           </View>
@@ -279,7 +308,6 @@ export default function PredictiveAnalysisScreen() {
           </View>
         </View>
 
-        {/* Statistics Section */}
         {metricData.statistics && (
           <View style={[styles.statisticsCard, { backgroundColor: colors.card }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Statistics</Text>
@@ -312,7 +340,6 @@ export default function PredictiveAnalysisScreen() {
           </View>
         )}
 
-        {/* View Historical Data Button */}
         <TouchableOpacity
           style={[styles.viewHistoryButton, { backgroundColor: colors.background, borderColor: colors.border }]}
           onPress={() => loadHistoricalMetricsForType(activeTab)}
@@ -321,7 +348,6 @@ export default function PredictiveAnalysisScreen() {
           <Text style={[styles.viewHistoryButtonText, { color: colors.primary }]}>View 30-Day History</Text>
         </TouchableOpacity>
 
-        {/* Forecast Chart */}
         {chartData && (
           <View style={[styles.chartCard, { backgroundColor: colors.card }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>7-Day Forecast</Text>
@@ -356,7 +382,6 @@ export default function PredictiveAnalysisScreen() {
           </View>
         )}
 
-        {/* Recommendations */}
         <View style={[styles.recommendationsCard, { backgroundColor: colors.card }]}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommendations</Text>
           {metricData.recommendations &&
@@ -366,7 +391,29 @@ export default function PredictiveAnalysisScreen() {
                 <Text style={[styles.recommendationText, { color: colors.text }]}>{rec}</Text>
               </View>
             ))}
+
+          {analysis.recommendations && analysis.recommendations.length > 0 && (
+            <>
+              <Text style={[styles.generalRecsTitle, { color: colors.text }]}>General Health Recommendations:</Text>
+              {analysis.recommendations.map((rec, index) => (
+                <View key={`general-${index}`} style={styles.recommendationItem}>
+                  <MaterialIcons name="lightbulb-outline" size={18} color={colors.warning} />
+                  <Text style={[styles.recommendationText, { color: colors.text }]}>{rec}</Text>
+                </View>
+              ))}
+            </>
+          )}
         </View>
+
+        {analysis.llm_powered && analysis.when_to_seek_care && (
+          <View style={[styles.seekCareCard, { backgroundColor: colors.card, borderColor: colors.warning }]}>
+            <View style={styles.seekCareHeader}>
+              <MaterialIcons name="local-hospital" size={20} color={colors.warning} />
+              <Text style={[styles.seekCareTitle, { color: colors.warning }]}>When to Seek Care</Text>
+            </View>
+            <Text style={[styles.seekCareText, { color: colors.text }]}>{analysis.when_to_seek_care}</Text>
+          </View>
+        )}
       </View>
     )
   }
@@ -420,6 +467,74 @@ export default function PredictiveAnalysisScreen() {
     )
   }
 
+  const loadLast20Measurements = async () => {
+    try {
+      console.log("📊 Loading last 20 measurements from realtime database...")
+      const temperatureData = await healthMetricsService.getMetrics({
+        metric_type: "temperature",
+        limit: 20,
+      })
+      const heartRateData = await healthMetricsService.getMetrics({
+        metric_type: "heart_rate",
+        limit: 20,
+      })
+
+      const allMeasurements = [...temperatureData, ...heartRateData]
+        .sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at))
+        .slice(0, 20)
+
+      setLast20Measurements(allMeasurements)
+      console.log("✅ Loaded", allMeasurements.length, "recent measurements")
+    } catch (error) {
+      console.error("❌ Error loading last 20 measurements:", error)
+    }
+  }
+
+  const renderLast20Measurements = () => {
+    const colors = themeService.getColors(currentTheme)
+
+    if (last20Measurements.length === 0) {
+      return (
+        <View style={[styles.measurementsCard, { backgroundColor: colors.card }]}>
+          <Text style={[styles.measurementsTitle, { color: colors.text }]}>Recent Measurements</Text>
+          <Text style={[styles.noDataText, { color: colors.textSecondary }]}>No recent measurements available</Text>
+        </View>
+      )
+    }
+
+    return (
+      <View style={[styles.measurementsCard, { backgroundColor: colors.card }]}>
+        <Text style={[styles.measurementsTitle, { color: colors.text }]}>Last 20 Measurements</Text>
+        <ScrollView style={styles.measurementsList} showsVerticalScrollIndicator={false}>
+          {last20Measurements.map((measurement, index) => (
+            <View
+              key={`${measurement.id}-${index}`}
+              style={[styles.measurementItem, { borderBottomColor: colors.border }]}
+            >
+              <View style={styles.measurementHeader}>
+                <MaterialIcons
+                  name={measurement.metric_type === "temperature" ? "device-thermostat" : "monitor-heart"}
+                  size={16}
+                  color={measurement.metric_type === "temperature" ? "#ff4444" : "#4285f4"}
+                />
+                <Text style={[styles.measurementType, { color: colors.text }]}>
+                  {measurement.metric_type === "temperature" ? "Temperature" : "Heart Rate"}
+                </Text>
+                <Text style={[styles.measurementTime, { color: colors.textSecondary }]}>
+                  {moment(measurement.recorded_at).format("MMM D, HH:mm")}
+                </Text>
+              </View>
+              <Text style={[styles.measurementValue, { color: colors.text }]}>
+                {measurement.value}
+                {measurement.metric_type === "temperature" ? "°C" : " bpm"}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    )
+  }
+
   const colors = themeService.getColors(currentTheme)
   const styles = createStyles(colors)
 
@@ -427,19 +542,9 @@ export default function PredictiveAnalysisScreen() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Analyzing your health data...</Text>
-      </View>
-    )
-  }
-
-  if (error) {
-    return (
-      <View style={styles.errorContainer}>
-        <MaterialIcons name="error-outline" size={50} color={colors.error} />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={loadAnalysis}>
-          <Text style={styles.retryButtonText}>Retry Analysis</Text>
-        </TouchableOpacity>
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+          Generating AI-powered health analysis...
+        </Text>
       </View>
     )
   }
@@ -449,13 +554,16 @@ export default function PredictiveAnalysisScreen() {
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <Text style={styles.header}>Predictive Health Analysis</Text>
+      <Text style={[styles.header, { color: colors.text }]}>AI Health Analysis</Text>
 
       {analysis && analysis.generated_at && (
         <Text style={styles.lastUpdated}>
           Last updated: {moment(analysis.generated_at).format("MMM D, YYYY h:mm A")}
+          <Text style={[styles.llmBadge, { color: colors.primary }]}> • AI Enhanced</Text>
         </Text>
       )}
+
+      {renderLast20Measurements()}
 
       {renderOverallHealth()}
 
@@ -466,20 +574,12 @@ export default function PredictiveAnalysisScreen() {
 
       {renderMetricAnalysis()}
 
-      {/* Historical Data Modal */}
       {renderHistoricalDataView()}
 
       <View style={styles.disclaimer}>
-        <MaterialIcons name="info-outline" size={20} color={colors.textSecondary} />
-        <Text style={styles.disclaimerText}>
-          These predictions are based on your historical health data and are for informational purposes only. Always
-          consult with your healthcare provider before making health decisions.
-        </Text>
-      </View>
-
-      <View style={styles.aiPowered}>
-        <Text style={styles.aiPoweredText}>
-          <MaterialIcons name="auto-awesome" size={14} color={colors.primary} /> Powered by AI Health Analysis
+        <MaterialIcons name="info-outline" size={16} color={colors.textSecondary} />
+        <Text style={[styles.disclaimerText, { color: colors.textSecondary }]}>
+          This analysis is powered by AI and should not replace professional medical advice.
         </Text>
       </View>
     </ScrollView>
@@ -845,5 +945,106 @@ const createStyles = (colors) =>
       textAlign: "center",
       fontSize: 16,
       marginTop: 20,
+    },
+    measurementsCard: {
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 20,
+      shadowColor: colors.shadow,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 6,
+      elevation: 3,
+    },
+    measurementsTitle: {
+      fontSize: 18,
+      fontWeight: "bold",
+      marginBottom: 12,
+    },
+    measurementsList: {
+      maxHeight: 300,
+    },
+    measurementItem: {
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      marginBottom: 8,
+    },
+    measurementHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: 4,
+    },
+    measurementType: {
+      fontSize: 14,
+      fontWeight: "600",
+      marginLeft: 8,
+      flex: 1,
+    },
+    measurementTime: {
+      fontSize: 12,
+    },
+    measurementValue: {
+      fontSize: 16,
+      fontWeight: "bold",
+      marginLeft: 24,
+    },
+    llmInsightCard: {
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 15,
+      shadowColor: colors.shadow,
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.1,
+      shadowRadius: 2,
+      elevation: 1,
+    },
+    llmInsightHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: 10,
+    },
+    llmInsightTitle: {
+      fontSize: 16,
+      fontWeight: "bold",
+      marginLeft: 8,
+    },
+    llmInsightText: {
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    generalRecsTitle: {
+      fontSize: 14,
+      fontWeight: "bold",
+      marginTop: 15,
+      marginBottom: 10,
+    },
+    seekCareCard: {
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 15,
+      borderWidth: 1,
+      shadowColor: colors.shadow,
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.1,
+      shadowRadius: 2,
+      elevation: 1,
+    },
+    seekCareHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: 10,
+    },
+    seekCareTitle: {
+      fontSize: 16,
+      fontWeight: "bold",
+      marginLeft: 8,
+    },
+    seekCareText: {
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    llmBadge: {
+      fontSize: 12,
+      fontWeight: "bold",
     },
   })
