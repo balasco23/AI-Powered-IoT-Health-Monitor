@@ -22,40 +22,45 @@ export default function MetricsScreen() {
   const [lastUpdate, setLastUpdate] = useState("")
   const [error, setError] = useState(null)
   const [userProfile, setUserProfile] = useState(null)
+  const [showHistoryView, setShowHistoryView] = useState(false)
+  const [historyData, setHistoryData] = useState({ temperature: [], heart_rate: [] })
 
-  // Load initial data
+  const onRefresh = async () => {
+    setRefreshing(true)
+    await loadCurrentReadings()
+    await loadUserProfile()
+    await loadHistoricalData()
+    setRefreshing(false)
+  }
+
   useEffect(() => {
     console.log("🔄 MetricsScreen: Initializing - will read from Firebase current_readings endpoint")
     console.log("🔗 Firebase Database URL:", "https://patient-health-app-a48bc-default-rtdb.firebaseio.com/")
     console.log("📍 Reading from path: current_readings")
     console.log("📊 Expected fields: heart_rate_bpm, temperature_celsius")
-    
+
     loadCurrentReadings()
     loadUserProfile()
 
-    // Set up real-time listener for current readings
     let unsubscribe = () => {}
     try {
       console.log("📡 Setting up real-time listener for current_readings...")
-      unsubscribe = healthMetricsService.subscribeToCurrentReadings(
-        (readings) => {
-          console.log("📊 Received current readings update from Firebase:", Object.keys(readings))
-          setCurrentReadings(readings)
-          if (Object.keys(readings).length > 0) {
-            setLastUpdate(moment().format("h:mm:ss a"))
-            setError(null)
-            console.log("✅ UI updated with new readings")
-          } else {
-            console.log("⚠️ Received empty readings from Firebase")
-          }
+      unsubscribe = healthMetricsService.subscribeToCurrentReadings((readings) => {
+        console.log("📊 Received current readings update from Firebase:", Object.keys(readings))
+        setCurrentReadings(readings)
+        if (Object.keys(readings).length > 0) {
+          setLastUpdate(moment().format("h:mm:ss a"))
+          setError(null)
+          console.log("✅ UI updated with new readings")
+        } else {
+          console.log("⚠️ Received empty readings from Firebase")
         }
-      )
+      })
     } catch (err) {
       console.error("❌ Error setting up current readings subscription:", err)
       setError("Failed to connect to Firebase current_readings. Please check your Firebase configuration.")
     }
 
-    // Also load historical data for charts
     loadHistoricalData()
 
     return () => {
@@ -82,7 +87,7 @@ export default function MetricsScreen() {
       const readings = await healthMetricsService.getCurrentReadings()
       console.log("📈 Current readings loaded from Firebase:", JSON.stringify(readings, null, 2))
       setCurrentReadings(readings)
-      
+
       if (Object.keys(readings).length > 0) {
         setLastUpdate(moment().format("h:mm:ss a"))
         console.log("✅ Successfully loaded", Object.keys(readings).length, "current readings")
@@ -91,7 +96,9 @@ export default function MetricsScreen() {
       }
     } catch (error) {
       console.error("❌ Error loading current readings from Firebase:", error)
-      setError("Failed to load current health readings from Firebase. Please check your connection and Firebase configuration.")
+      setError(
+        "Failed to load current health readings from Firebase. Please check your connection and Firebase configuration.",
+      )
     } finally {
       setLoading(false)
     }
@@ -99,48 +106,25 @@ export default function MetricsScreen() {
 
   const loadHistoricalData = async () => {
     try {
-      // Get historical data for charts (from user's personal metrics)
-      const allMetrics = await healthMetricsService.getMetrics({ limit: 50 })
-      console.log("📊 Historical metrics loaded:", allMetrics.length, "total metrics")
-      processMetricsData(allMetrics)
+      const historicalMetrics = await healthMetricsService.getHistoricalData(7)
+      console.log("📊 Historical metrics loaded for charts:", historicalMetrics)
+      setHistoricalData(historicalMetrics)
     } catch (error) {
       console.error("❌ Error loading historical data:", error)
     }
   }
 
-  const processMetricsData = (metrics) => {
-    console.log("🔄 Processing historical metrics data:", metrics.length, "metrics")
-
-    const organized = {
-      temperature: [],
-      heart_rate: [],
+  const load20DayHistory = async () => {
+    try {
+      console.log("📊 Loading 20-day history...")
+      const twentyDayData = await healthMetricsService.getHistoricalData(20)
+      setHistoryData(twentyDayData)
+      setShowHistoryView(true)
+      console.log("✅ 20-day history loaded")
+    } catch (error) {
+      console.error("❌ Error loading 20-day history:", error)
+      Alert.alert("Error", "Failed to load 20-day history")
     }
-
-    // Group and sort metrics - only temperature and heart_rate
-    metrics.forEach((metric) => {
-      if (organized[metric.metric_type]) {
-        organized[metric.metric_type].push({
-          ...metric,
-          timestamp: metric.recorded_at || new Date(),
-        })
-      }
-    })
-
-    // Sort by timestamp (newest first) and limit for charts
-    Object.keys(organized).forEach((type) => {
-      organized[type] = organized[type].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10)
-      console.log(`📊 ${type}:`, organized[type].length, "data points")
-    })
-
-    setHistoricalData(organized)
-  }
-
-  const onRefresh = async () => {
-    console.log("🔄 Manual refresh triggered...")
-    setRefreshing(true)
-    await loadCurrentReadings()
-    await loadHistoricalData()
-    setRefreshing(false)
   }
 
   const getStatusColor = (status) => {
@@ -229,15 +213,33 @@ export default function MetricsScreen() {
     const data = historicalData[metricType] || []
     if (data.length === 0) return null
 
-    const recent = data.slice(0, 10).reverse() // Get recent data, oldest first for chart
+    const chartData = data.slice(-10)
 
     return {
-      labels: recent.map((item) => moment(item.timestamp).format("HH:mm")),
+      labels: chartData.map((item) => moment(item.timestamp).format("MM/DD")),
       datasets: [
         {
-          data: recent.map((item) => item.value),
-          color: (opacity = 1) => `rgba(0, 128, 0, ${opacity})`,
+          data: chartData.map((item) => item.value),
+          color: (opacity = 1) =>
+            metricType === "temperature" ? `rgba(255, 68, 68, ${opacity})` : `rgba(66, 133, 244, ${opacity})`,
           strokeWidth: 3,
+        },
+      ],
+    }
+  }
+
+  const prepare20DayChartData = (metricType) => {
+    const data = historyData[metricType] || []
+    if (data.length === 0) return null
+
+    return {
+      labels: data.map((item) => moment(item.timestamp).format("MM/DD")),
+      datasets: [
+        {
+          data: data.map((item) => item.value),
+          color: (opacity = 1) =>
+            metricType === "temperature" ? `rgba(255, 68, 68, ${opacity})` : `rgba(66, 133, 244, ${opacity})`,
+          strokeWidth: 2,
         },
       ],
     }
@@ -255,54 +257,120 @@ export default function MetricsScreen() {
         <Text style={styles.metricValue}>{formatMetricValue(metric)}</Text>
         <View style={styles.statusContainer}>
           <Text
-            style={[
-              styles.metricStatus,
-              { color: getStatusColor(getMetricStatus(metric.metric_type, metric.value)) },
-            ]}
+            style={[styles.metricStatus, { color: getStatusColor(getMetricStatus(metric.metric_type, metric.value)) }]}
           >
             {getMetricStatus(metric.metric_type, metric.value)}
           </Text>
         </View>
         <Text style={styles.deviceInfo}>Device: {metric.device_id}</Text>
-        
-        {/* Show additional sensor info if available */}
+
         {metric.temp_valid !== undefined && (
-          <Text style={styles.additionalInfo}>Valid: {metric.temp_valid ? 'Yes' : 'No'}</Text>
+          <Text style={styles.additionalInfo}>Valid: {metric.temp_valid ? "Yes" : "No"}</Text>
         )}
         {metric.temperature_fahrenheit !== undefined && (
           <Text style={styles.additionalInfo}>({metric.temperature_fahrenheit}°F)</Text>
         )}
-        {metric.heart_rate_avg !== undefined && (
-          <Text style={styles.additionalInfo}>Avg: {metric.heart_rate_avg}</Text>
-        )}
-        
+        {metric.heart_rate_avg !== undefined && <Text style={styles.additionalInfo}>Avg: {metric.heart_rate_avg}</Text>}
+
         <Text style={styles.timeInfo}>{moment(metric.recorded_at).format("MMM DD, HH:mm")}</Text>
       </View>
     )
   }
 
-  // Function to clear current readings from database
   const clearCurrentReadings = async () => {
-    Alert.alert(
-      "Clear Current Readings",
-      "This will clear the current readings from Firebase. Are you sure?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Clear",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await healthMetricsService.clearCurrentReadings()
-              setCurrentReadings({})
-              setLastUpdate("")
-              Alert.alert("Success", "Current readings cleared from Firebase.")
-            } catch (error) {
-              Alert.alert("Error", "Failed to clear data: " + error.message)
-            }
+    Alert.alert("Clear Current Readings", "This will clear the current readings from Firebase. Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clear",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await healthMetricsService.clearCurrentReadings()
+            setCurrentReadings({})
+            setLastUpdate("")
+            Alert.alert("Success", "Current readings cleared from Firebase.")
+          } catch (error) {
+            Alert.alert("Error", "Failed to clear data: " + error.message)
           }
-        }
-      ]
+        },
+      },
+    ])
+  }
+
+  const render20DayHistoryView = () => {
+    if (!showHistoryView) return null
+
+    return (
+      <View style={styles.historyOverlay}>
+        <View style={styles.historyContainer}>
+          <View style={styles.historyHeader}>
+            <Text style={styles.historyTitle}>20-Day Health History</Text>
+            <TouchableOpacity onPress={() => setShowHistoryView(false)}>
+              <MaterialIcons name="close" size={24} color="#333" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.historyContent}>
+            {prepare20DayChartData("temperature") && (
+              <View style={styles.historyChartContainer}>
+                <Text style={styles.historyChartTitle}>Temperature (20 Days)</Text>
+                <Text style={styles.historyDataCount}>{historyData.temperature.length} measurements</Text>
+                <LineChart
+                  data={prepare20DayChartData("temperature")}
+                  width={screenWidth - 80}
+                  height={200}
+                  chartConfig={{
+                    backgroundColor: "#ffffff",
+                    backgroundGradientFrom: "#f8f9fa",
+                    backgroundGradientTo: "#f8f9fa",
+                    decimalPlaces: 1,
+                    color: (opacity = 1) => `rgba(255, 68, 68, ${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+                    style: { borderRadius: 16 },
+                    propsForDots: { r: "3", strokeWidth: "1", stroke: "#ff4444" },
+                  }}
+                  bezier
+                  style={styles.historyChart}
+                />
+              </View>
+            )}
+
+            {prepare20DayChartData("heart_rate") && (
+              <View style={styles.historyChartContainer}>
+                <Text style={styles.historyChartTitle}>Heart Rate (20 Days)</Text>
+                <Text style={styles.historyDataCount}>{historyData.heart_rate.length} measurements</Text>
+                <LineChart
+                  data={prepare20DayChartData("heart_rate")}
+                  width={screenWidth - 80}
+                  height={200}
+                  chartConfig={{
+                    backgroundColor: "#ffffff",
+                    backgroundGradientFrom: "#f8f9fa",
+                    backgroundGradientTo: "#f8f9fa",
+                    decimalPlaces: 0,
+                    color: (opacity = 1) => `rgba(66, 133, 244, ${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+                    style: { borderRadius: 16 },
+                    propsForDots: { r: "3", strokeWidth: "1", stroke: "#4285f4" },
+                  }}
+                  bezier
+                  style={styles.historyChart}
+                />
+              </View>
+            )}
+
+            {historyData.temperature.length === 0 && historyData.heart_rate.length === 0 && (
+              <View style={styles.noHistoryData}>
+                <MaterialIcons name="timeline" size={40} color="#6c757d" />
+                <Text style={styles.noHistoryText}>No historical data available yet</Text>
+                <Text style={styles.noHistorySubText}>
+                  Data will be automatically stored as your device sends new readings
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </View>
     )
   }
 
@@ -340,7 +408,6 @@ export default function MetricsScreen() {
         <Text style={styles.dataNote}>🔄 Reading: heart_rate_bpm & temperature_celsius</Text>
       </View>
 
-      {/* Clear Current Readings Button */}
       {Object.keys(currentReadings).length > 0 && (
         <TouchableOpacity style={styles.clearButton} onPress={clearCurrentReadings}>
           <MaterialIcons name="clear" size={20} color="#fff" />
@@ -348,46 +415,45 @@ export default function MetricsScreen() {
         </TouchableOpacity>
       )}
 
-      {/* Current Readings Cards - Only Temperature and Heart Rate */}
       <View style={styles.currentMetrics}>
         {renderMetricCard("temperature", currentReadings.temperature, "Temperature", "device-thermostat", "#ff4444")}
         {renderMetricCard("heart_rate", currentReadings.heart_rate, "Heart Rate", "monitor-heart", "#ff4444")}
 
-        {/* Show message if no current readings */}
         {Object.keys(currentReadings).length === 0 && (
           <View style={styles.noDataCard}>
             <MaterialIcons name="info-outline" size={40} color="#4285f4" />
             <Text style={styles.noDataTitle}>No Current Readings Available</Text>
             <Text style={styles.noDataText}>
               📡 Reading from Firebase Realtime Database
-              {'\n'}🔗 Database: patient-health-app-a48bc-default-rtdb.firebaseio.com
-              {'\n'}📍 Path: /current_readings
-              {'\n\n'}Looking for these specific fields:
-              {'\n'}• heart_rate_bpm: [your heart rate value]
-              {'\n'}• temperature_celsius: [your temperature value]
-              {'\n\n'}Current data structure detected:
-              {'\n'}• heart_rate_avg: 0
-              {'\n'}• heart_rate_bpm: 4.82393
-              {'\n'}• temp_valid: true
-              {'\n'}• temperature_celsius: 29.5625
-              {'\n'}• temperature_fahrenheit: 85.21249
-              {'\n'}• timestamp: 273056
-              {'\n'}• wifi_rssi: -48
-              {'\n\n'}🔄 The app will automatically update when new data is available.
-              {'\n'}Pull down to refresh manually.
+              {"\n"}🔗 Database: patient-health-app-a48bc-default-rtdb.firebaseio.com
+              {"\n"}📍 Path: /current_readings
+              {"\n\n"}Looking for these specific fields:
+              {"\n"}• heart_rate_bpm: [your heart rate value]
+              {"\n"}• temperature_celsius: [your temperature value]
+              {"\n\n"}Current data structure detected:
+              {"\n"}• heart_rate_avg: 0{"\n"}• heart_rate_bpm: 4.82393
+              {"\n"}• temp_valid: true
+              {"\n"}• temperature_celsius: 29.5625
+              {"\n"}• temperature_fahrenheit: 85.21249
+              {"\n"}• timestamp: 273056
+              {"\n"}• wifi_rssi: -48
+              {"\n\n"}🔄 The app will automatically update when new data is available.
+              {"\n"}Pull down to refresh manually.
             </Text>
           </View>
         )}
       </View>
 
-      {/* Historical Charts - Only Temperature and Heart Rate */}
+      <TouchableOpacity style={styles.historyButton} onPress={load20DayHistory}>
+        <MaterialIcons name="timeline" size={20} color="#fff" />
+        <Text style={styles.historyButtonText}>View 20-Day History</Text>
+      </TouchableOpacity>
+
       {prepareChartData("temperature") && (
         <View style={styles.chartContainer}>
           <View style={styles.chartHeader}>
-            <Text style={styles.sectionTitle}>Temperature History</Text>
-            <TouchableOpacity onPress={() => navigation.navigate("PredictiveAnalysis")}>
-              <Text style={styles.viewAll}>View Analysis</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>Temperature History (Stored Data)</Text>
+            <Text style={styles.dataCount}>{historicalData.temperature.length} measurements</Text>
           </View>
           <LineChart
             data={prepareChartData("temperature")}
@@ -398,10 +464,10 @@ export default function MetricsScreen() {
               backgroundGradientFrom: "#f8f9fa",
               backgroundGradientTo: "#f8f9fa",
               decimalPlaces: 1,
-              color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+              color: (opacity = 1) => `rgba(255, 68, 68, ${opacity})`,
               labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
               style: { borderRadius: 16 },
-              propsForDots: { r: "5", strokeWidth: "2", stroke: "#ffa726" },
+              propsForDots: { r: "5", strokeWidth: "2", stroke: "#ff4444" },
             }}
             bezier
             style={styles.chart}
@@ -412,10 +478,8 @@ export default function MetricsScreen() {
       {prepareChartData("heart_rate") && (
         <View style={styles.chartContainer}>
           <View style={styles.chartHeader}>
-            <Text style={styles.sectionTitle}>Heart Rate History</Text>
-            <TouchableOpacity onPress={() => navigation.navigate("PredictiveAnalysis")}>
-              <Text style={styles.viewAll}>View Analysis</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>Heart Rate History (Stored Data)</Text>
+            <Text style={styles.dataCount}>{historicalData.heart_rate.length} measurements</Text>
           </View>
           <LineChart
             data={prepareChartData("heart_rate")}
@@ -426,10 +490,10 @@ export default function MetricsScreen() {
               backgroundGradientFrom: "#f8f9fa",
               backgroundGradientTo: "#f8f9fa",
               decimalPlaces: 0,
-              color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+              color: (opacity = 1) => `rgba(66, 133, 244, ${opacity})`,
               labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
               style: { borderRadius: 16 },
-              propsForDots: { r: "5", strokeWidth: "2", stroke: "#ffa726" },
+              propsForDots: { r: "5", strokeWidth: "2", stroke: "#4285f4" },
             }}
             bezier
             style={styles.chart}
@@ -437,24 +501,17 @@ export default function MetricsScreen() {
         </View>
       )}
 
-      {/* Emergency Contact Button */}
-      <TouchableOpacity style={styles.emergencyButton} onPress={handleEmergencyContact}>
-        <MaterialIcons name="warning" size={24} color="white" />
-        <Text style={styles.emergencyButtonText}>Call Emergency Contact</Text>
-      </TouchableOpacity>
+      {!prepareChartData("temperature") && !prepareChartData("heart_rate") && (
+        <View style={styles.noChartsContainer}>
+          <MaterialIcons name="show-chart" size={40} color="#6c757d" />
+          <Text style={styles.noChartsTitle}>No Chart Data Available</Text>
+          <Text style={styles.noChartsText}>
+            Charts will appear automatically as your device sends readings and data is stored in the database.
+          </Text>
+        </View>
+      )}
 
-      {/* Data Info */}
-      <View style={styles.infoContainer}>
-        <Text style={styles.infoTitle}>Device Sensor Data</Text>
-        <Text style={styles.infoText}>
-          📡 This screen displays temperature (°C) and heart rate (bpm) data directly from your device sensor 
-          via Firebase Realtime Database. The app reads from the 'current_readings' endpoint and shows:
-          {'\n'}• Temperature from 'temperature_celsius' field
-          {'\n'}• Heart rate from 'heart_rate_bpm' field
-          {'\n'}• Additional sensor info when available
-          {'\n\n'}Data updates automatically when your device uploads new readings.
-        </Text>
-      </View>
+      {render20DayHistoryView()}
     </ScrollView>
   )
 }
@@ -695,5 +752,117 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#1976d2",
     lineHeight: 18,
+  },
+  historyButton: {
+    backgroundColor: "#28a745",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+  },
+  historyButtonText: {
+    color: "#fff",
+    fontWeight: "bold",
+    marginLeft: 8,
+  },
+  dataCount: {
+    fontSize: 12,
+    color: "#6c757d",
+    fontStyle: "italic",
+  },
+  noChartsContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 30,
+    alignItems: "center",
+    marginBottom: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  noChartsTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  noChartsText: {
+    fontSize: 12,
+    color: "#6c757d",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  historyOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 1000,
+  },
+  historyContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    margin: 20,
+    maxHeight: "80%",
+    width: "90%",
+  },
+  historyHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e9ecef",
+  },
+  historyTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  historyContent: {
+    padding: 20,
+  },
+  historyChartContainer: {
+    marginBottom: 30,
+  },
+  historyChartTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 5,
+  },
+  historyDataCount: {
+    fontSize: 12,
+    color: "#6c757d",
+    marginBottom: 10,
+  },
+  historyChart: {
+    marginVertical: 8,
+    borderRadius: 16,
+  },
+  noHistoryData: {
+    alignItems: "center",
+    padding: 40,
+  },
+  noHistoryText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  noHistorySubText: {
+    fontSize: 12,
+    color: "#6c757d",
+    textAlign: "center",
   },
 })
